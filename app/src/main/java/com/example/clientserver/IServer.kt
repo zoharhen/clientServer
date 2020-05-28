@@ -1,6 +1,6 @@
 package com.example.clientserver
 
-import org.json.JSONObject
+import com.google.gson.JsonObject
 import retrofit2.Call
 import retrofit2.http.GET
 import retrofit2.http.Path
@@ -22,6 +22,6 @@ interface IServer {
 
     @Headers("Content-Type: application/json")
     @POST("/user/edit/")
-    fun updateUserInfo(@Header("Authorization") token: String , @Body json: JSONObject): Call<Model.UserResponse>
+    fun updateUserInfo(@Header("Authorization") token: String , @Body prettyName: JsonObject): Call<Model.UserResponse>
 
 }

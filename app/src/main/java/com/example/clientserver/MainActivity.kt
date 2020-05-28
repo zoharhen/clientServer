@@ -16,13 +16,11 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.work.*
-import com.example.clientserver.Model.TokenResponse
-import com.example.clientserver.Model.UserResponse
-import com.example.clientserver.ServerHolder.GetUserTokenWorker
 import com.google.gson.Gson
+import com.squareup.picasso.MemoryPolicy
+import com.squareup.picasso.Picasso
 import kotlinx.android.synthetic.main.activity_main.*
 import java.util.*
-
 
 class MainActivity : AppCompatActivity() {
 
@@ -36,19 +34,16 @@ class MainActivity : AppCompatActivity() {
 
         handlePermission()
 
-        sp = getPreferences(Context.MODE_PRIVATE)
-        token = sp.getString("TOKEN", null)
-        if (token.isNullOrBlank()) {
-            setLoginUI()
-        } else {
+        sp = getSharedPreferences("clientServer", Context.MODE_PRIVATE)
+        token = sp.getString("token", null)
+        setLoginUI()
+        if (!token.isNullOrBlank()) {
             usernameEditText.isEnabled = false
-            loadingIcon.visibility = View.VISIBLE
-             val user = getUserInfo()!!
-            loadingIcon.visibility = View.GONE
-            switchToUpdateInfoUI(if (user.pretty_name.isBlank()) user.username else user.pretty_name)
+             this.getUserInfo(token!!) // calling switchToUpdateInfoUI func
         }
     }
 
+    @SuppressLint("SetTextI18n")
     private fun setLoginUI() {
         usernameEditText.addTextChangedListener(object : TextWatcher {
             override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {}
@@ -69,15 +64,12 @@ class MainActivity : AppCompatActivity() {
             val manager = getSystemService(Activity.INPUT_METHOD_SERVICE) as InputMethodManager
             manager.hideSoftInputFromWindow(it.windowToken, 0)
             if (token.isNullOrBlank()) { // login flow
-                getUserToken(usernameEditText.text.toString())
-                switchToUpdateInfoUI(usernameEditText.text.toString())
+                this.getUserToken(usernameEditText.text.toString()) // calling saveToken() and switchToUpdateInfoUI methods (via getUserInfo observer)
             } else { // update pretty name flow
-//                updatePrettyName() + update UI and server
-//                val name = if (user.pretty_name.isBlank()) user.username else user.pretty_name)
-//                welcomeTextView.text = "Welcome, $name!"
-                // todo: write updatePrettyName() method!
+                val prettyname = prettynameEditText.text.toString()
+                prettynameEditText.text.clear()
+                this.updatePrettyName(prettyname) // calling updateUiWithUserInfo
             }
-
         }
     }
 
@@ -87,13 +79,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     @SuppressLint("SetTextI18n")
-    private fun switchToUpdateInfoUI(name : String) {
+    private fun switchToUpdateInfoUI(name : String, img: String) {
         usernameEditText.visibility = View.INVISIBLE
         prettynameEditText.visibility = View.VISIBLE
         okButton.text = "Update"
         okButton.isEnabled = true
-        welcomeTextView.text = "Welcome, $name!"
+        this.updateUiWithUserInfo(name, img)
+        userIconView.visibility = View.VISIBLE
         welcomeTextView.visibility = View.VISIBLE
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun updateUiWithUserInfo(name: String, img: String) {
+        Picasso
+            .with(applicationContext)
+            .load(ServerHolder.SERVER_URL + img)
+            .memoryPolicy(MemoryPolicy.NO_STORE)
+            .into(userIconView)
+        userIconView.visibility = View.VISIBLE
+        welcomeTextView.text = "Welcome, $name!"
     }
 
     /////////////////////////// permissions ///////////////////////////////
@@ -115,11 +119,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /////////////////////////// server flow ///////////////////////////////
+    ////////////////// flow helper //////////////////////
 
     private fun getUserToken(username: String) {
         val workTagUniqueId = UUID.randomUUID()
-        val getUserTokenWork = OneTimeWorkRequest.Builder(GetUserTokenWorker::class.java)
+        val getUserTokenWork = OneTimeWorkRequest.Builder(ServerHolder.GetUserTokenWorker::class.java)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setInputData(Data.Builder().putString("username", username).build())
             .addTag(workTagUniqueId.toString())
@@ -128,38 +132,66 @@ class MainActivity : AppCompatActivity() {
         WorkManager.getInstance(applicationContext)
             .getWorkInfosByTagLiveData(workTagUniqueId.toString())
             .observe(this, androidx.lifecycle.Observer<List<WorkInfo>> { workInfo ->
-                if (!workInfo.isNullOrEmpty()) {
+                if (!workInfo.isNullOrEmpty() && workInfo[0].state == WorkInfo.State.SUCCEEDED) {
                     val tokenAsJson = workInfo[0].outputData.getString("token")
                     if (!tokenAsJson.isNullOrBlank()) {
                         Log.d("getUserToken_${username}", tokenAsJson)
-                        saveToken(Gson().fromJson(tokenAsJson, TokenResponse::class.java).data)
+                        this.saveToken(Gson().fromJson(tokenAsJson, Model.TokenResponse::class.java).data)
+                        this.getUserInfo(token!!) // calling switchToUpdateInfoUI func
                     }
                 }
             })
     }
 
-    private fun getUserInfo() : Model.User? {
-        var userInfoRes: Model.User? = null
+    private fun getUserInfo(token: String) {
+        loadingIcon.visibility = View.VISIBLE
         val workTagUniqueId = UUID.randomUUID()
         val getUserInfoWork = OneTimeWorkRequest.Builder(ServerHolder.GetUserInfoWorker::class.java)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setInputData(Data.Builder().putString("token", this.token).build())
+            .setInputData(Data.Builder().putString("token", token).build())
             .addTag(workTagUniqueId.toString())
             .build()
         WorkManager.getInstance(applicationContext).enqueue(getUserInfoWork)
         WorkManager.getInstance(applicationContext)
             .getWorkInfosByTagLiveData(workTagUniqueId.toString())
             .observe(this, androidx.lifecycle.Observer<List<WorkInfo>> { workInfo ->
-                if (!workInfo.isNullOrEmpty()) {
+                if (!workInfo.isNullOrEmpty() && workInfo[0].state == WorkInfo.State.SUCCEEDED) {
                     val userInfoAsJson = workInfo[0].outputData.getString("userInfo")
                     if (!userInfoAsJson.isNullOrBlank()) {
-                        Log.d("getUserInfo_${this.token}", userInfoAsJson!!)
-                        userInfoRes = Gson().fromJson(userInfoAsJson, UserResponse::class.java).data
+                        Log.d("getUserInfo_${token}", userInfoAsJson)
+                        val user = Gson().fromJson(userInfoAsJson, Model.UserResponse::class.java).data
+                        switchToUpdateInfoUI((if (user.pretty_name.isBlank()) user.username else user.pretty_name), user.image_url)
+                        loadingIcon.visibility = View.GONE
                     }
                 }
             })
-        return userInfoRes
-        // todo: get user imageURL and present it!
+    }
+
+    private fun updatePrettyName(prettyName: String) {
+        loadingIcon.visibility = View.VISIBLE
+        val workTagUniqueId = UUID.randomUUID()
+        val updateUserInfoWork = OneTimeWorkRequest.Builder(ServerHolder.UpdateUserInfoWorker::class.java)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(Data.Builder().putString("token", token).putString("pretty_name", prettyName).build())
+            .addTag(workTagUniqueId.toString())
+            .build()
+        WorkManager.getInstance(applicationContext).enqueue(updateUserInfoWork)
+        WorkManager.getInstance(applicationContext)
+            .getWorkInfosByTagLiveData(workTagUniqueId.toString())
+            .observe(this, androidx.lifecycle.Observer<List<WorkInfo>> { workInfo ->
+                if (!workInfo.isNullOrEmpty()) {
+                    if (workInfo[0].state == WorkInfo.State.FAILED) Toast.makeText(applicationContext, "Update userInfo failed", Toast.LENGTH_LONG).show()
+                    else if (workInfo[0].state == WorkInfo.State.SUCCEEDED) {
+                        val userInfoAsJson = workInfo[0].outputData.getString("userInfo")
+                        if (!userInfoAsJson.isNullOrBlank()) {
+                            val user = Gson().fromJson(userInfoAsJson, Model.UserResponse::class.java).data
+                            Log.d("updatePrettyName_${user.username}", userInfoAsJson)
+                            this.updateUiWithUserInfo((if (prettyName.isBlank()) user.username else prettyName), user.image_url)
+                            loadingIcon.visibility = View.GONE
+                        }
+                    }
+                }
+            })
     }
 
 

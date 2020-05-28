@@ -5,8 +5,8 @@ import androidx.work.Data
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.google.gson.Gson
+import com.google.gson.JsonObject
 import okhttp3.OkHttpClient
-import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.IOException
@@ -21,7 +21,7 @@ object Model {
 class ServerHolder private constructor(val serverInterface: IServer) {
 
     companion object {
-        private const val SERVER_URL = "http://hujipostpc2019.pythonanywhere.com"
+        const val SERVER_URL = "https://hujipostpc2019.pythonanywhere.com"
 
         @get:Synchronized
         var instance: ServerHolder? = null
@@ -44,16 +44,16 @@ class ServerHolder private constructor(val serverInterface: IServer) {
         @Synchronized
         override fun doWork(): Result {
             val serverInterface: IServer? = instance?.serverInterface
-            try {
+            return try {
                 val response= serverInterface!!.getUserToken(inputData.getString("username")).execute()
                 val token= Gson().toJson(response.body())
                 val outputData = Data.Builder()
                     .putString("token", token)
                     .build()
-                return Result.success(outputData)
+                Result.success(outputData)
             } catch (e: IOException) {
                 e.printStackTrace()
-                return Result.retry()
+                Result.retry()
             }
         }
     }
@@ -81,12 +81,11 @@ class ServerHolder private constructor(val serverInterface: IServer) {
         @Synchronized
         override fun doWork(): Result {
             val serverInterface: IServer? = instance?.serverInterface
+            val tokenKey = "token ${inputData.getString("token")}"
             return try {
-                val prettyName = inputData.getString("key_pretty_name") ?: ""
-                val imageUrl = inputData.getString("key_image_url") ?: ""
-                val tokenKey = "token ${inputData.getString("token")}"
-                val json = JSONObject("""{"pretty_name":"$prettyName", "image_url":$imageUrl}""")
-                val response= serverInterface!!.updateUserInfo(tokenKey, json).execute()
+                val info = JsonObject()
+                info.addProperty("pretty_name", inputData.getString("pretty_name"))
+                val response= serverInterface!!.updateUserInfo(tokenKey, info).execute()
                 val userInfo = Gson().toJson(response.body() ?: Result.failure())
                 val outputData = Data.Builder()
                     .putString("userInfo", userInfo)
